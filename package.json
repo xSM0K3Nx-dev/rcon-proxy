@@ -1,7 +1,9 @@
 {
   "name": "rcon-proxy",
   "version": "1.0.0",
+  "description": "Plain ws:// RCON proxy for Rust Console Edition (GPortal) — Bun runtime",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "dependencies": { "ws": "^8.18.0" }
+  "scripts": {
+    "start": "bun server.js"
+  }
 }
