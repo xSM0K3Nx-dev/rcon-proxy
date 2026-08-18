@@ -1,9 +1,9 @@
-// Rust RCON WebSocket Proxy
-const http = require("http");
-const { WebSocket } = require("ws");
+// Rust RCON WebSocket Proxy — Bun runtime
+// Uses Bun.serve + native WebSocket
+/* eslint-disable */
 
 const SECRET = process.env.PROXY_SECRET || "changeme";
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 function sendRcon(ip, port, password, command) {
   return new Promise((resolve, reject) => {
@@ -12,51 +12,89 @@ function sendRcon(ip, port, password, command) {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      try { ws.terminate(); } catch {}
+      try { ws.close(); } catch {}
       fn(val);
     };
+
     const timeout = setTimeout(() => {
       done(reject, new Error("RCON connection timed out after 12s"));
     }, 12000);
-    const ws = new WebSocket(`ws://${ip}:${port}/${password}`);
+
+    const wsUrl = `ws://${ip}:${port}/${encodeURIComponent(password)}`;
+    const ws = new WebSocket(wsUrl);
     const identifier = Math.floor(Math.random() * 100000);
-    ws.on("open", () => {
+
+    ws.onopen = () => {
       ws.send(JSON.stringify({ Identifier: identifier, Message: command, Name: "RustProxy" }));
-    });
-    ws.on("message", (data) => {
+    };
+
+    ws.onmessage = (event) => {
       try {
-        const msg = JSON.parse(data.toString());
-        if (msg.Identifier === identifier) done(resolve, msg.Message || "OK");
-      } catch {}
-    });
-    ws.on("error", (e) => done(reject, new Error("WebSocket error: " + e.message)));
-    ws.on("close", (code, reason) => {
-      if (!settled) done(reject, new Error(`Connection closed: ${code} ${reason}`));
-    });
+        const msg = JSON.parse(event.data);
+        if (msg.Identifier === identifier) {
+          done(resolve, msg.Message || "OK");
+        }
+      } catch {
+        done(resolve, String(event.data));
+      }
+    };
+
+    ws.onerror = (e) => {
+      done(reject, new Error("WebSocket error: " + (e?.message || "unknown")));
+    };
+
+    ws.onclose = (e) => {
+      if (!settled) done(reject, new Error(`Connection closed: ${e.code} ${e.reason || ""}`));
+    };
   });
 }
 
-const server = http.createServer(async (req, res) => {
-  res.setHeader("Content-Type", "application/json");
-  if (req.method !== "POST" || req.url !== "/rcon") {
-    res.writeHead(404);
-    return res.end(JSON.stringify({ error: "Not found" }));
-  }
-  let body = "";
-  req.on("data", (chunk) => { body += chunk; });
-  req.on("end", async () => {
-    try {
-      const { secret, ip, port, password, command } = JSON.parse(body);
-      if (secret !== SECRET) { res.writeHead(401); return res.end(JSON.stringify({ error: "Unauthorized" })); }
-      if (!ip || !port || !password || !command) { res.writeHead(400); return res.end(JSON.stringify({ error: "Missing fields" })); }
-      const response = await sendRcon(ip, String(port), password, command);
-      res.writeHead(200);
-      res.end(JSON.stringify({ success: true, response }));
-    } catch (err) {
-      res.writeHead(500);
-      res.end(JSON.stringify({ success: false, error: err.message }));
+const server = Bun.serve({
+  port: PORT,
+  async fetch(req) {
+    const url = new URL(req.url);
+
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
+      return new Response(JSON.stringify({ status: "alive" }), {
+        headers: { "Content-Type": "application/json" },
+      });
     }
-  });
+
+    if (req.method !== "POST" || url.pathname !== "/rcon") {
+      return new Response(JSON.stringify({ error: "Not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    try {
+      const { secret, ip, port, password, command } = await req.json();
+
+      if (secret !== SECRET) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      if (!ip || !port || !password || !command) {
+        return new Response(JSON.stringify({ error: "Missing required fields: ip, port, password, command" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      const response = await sendRcon(ip, String(port), password, command);
+      return new Response(JSON.stringify({ success: true, response }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({ success: false, error: err.message }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  },
 });
 
-server.listen(PORT, () => console.log(`RCON Proxy running on port ${PORT}`));
+console.log(`RCON Proxy (Bun) running on port ${PORT}`);
